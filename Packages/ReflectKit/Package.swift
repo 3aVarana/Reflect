@@ -5,17 +5,18 @@ import PackageDescription
 /// (everything is MainActor-isolated by default; background work opts out explicitly).
 let swiftSettings: [SwiftSetting] = [
     .defaultIsolation(MainActor.self),
-    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("MemberImportVisibility")
 ]
 
 let package = Package(
     name: "ReflectKit",
+    defaultLocalization: "en",
     platforms: [.iOS(.v26)],
     products: [
         .library(name: "ReflectDomain", targets: ["ReflectDomain"]),
         .library(name: "ReflectIntelligence", targets: ["ReflectIntelligence"]),
         .library(name: "ReflectSpeech", targets: ["ReflectSpeech"]),
-        .library(name: "ReflectFeatures", targets: ["ReflectFeatures"]),
+        .library(name: "ReflectFeatures", targets: ["ReflectFeatures"])
     ],
     targets: [
         // Persistence + pure domain types. No UI, no AI.
@@ -28,11 +29,16 @@ let package = Package(
         .target(
             name: "ReflectFeatures",
             dependencies: ["ReflectDomain", "ReflectIntelligence", "ReflectSpeech"],
+            resources: [.process("Resources")],
             swiftSettings: swiftSettings
         ),
         .testTarget(name: "ReflectDomainTests", dependencies: ["ReflectDomain"], swiftSettings: swiftSettings),
-        .testTarget(name: "ReflectIntelligenceTests", dependencies: ["ReflectIntelligence"], swiftSettings: swiftSettings),
-        .testTarget(name: "ReflectFeaturesTests", dependencies: ["ReflectFeatures"], swiftSettings: swiftSettings),
+        .testTarget(
+            name: "ReflectIntelligenceTests",
+            dependencies: ["ReflectIntelligence"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(name: "ReflectFeaturesTests", dependencies: ["ReflectFeatures"], swiftSettings: swiftSettings)
     ],
     swiftLanguageModes: [.v6]
 )
