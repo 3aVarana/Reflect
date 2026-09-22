@@ -22,3 +22,5 @@ Package.resolved
 # Tooling
 .claude/settings.local.json
 *.xcresult
+.claude/workflow/
+.claude/agent-memory/
