@@ -1,6 +1,7 @@
 # Reflect — Architecture
 
-Status: v1 baseline, decided 2026-09-22. Update this file when a decision changes.
+Status: v1 baseline, decided 2026-09-22. Updated 2026-09-22 for Phase 1 (final schema
+relationships, delete rules and migration policy). Update this file when a decision changes.
 
 ## 1. Product in one paragraph
 
@@ -63,34 +64,55 @@ Planned later modules: `ReflectHealth` (HealthKit State of Mind + correlations) 
 JournalEntry
   id: UUID (unique), createdAt, updatedAt, text, source: EntrySource (.typed | .voice)
   mood: Mood?                         denormalised from the latest insight for cheap queries
-  insight: EntryInsight?              1:1, cascade delete
-  themes: [Theme]                     many-to-many
-  actionItems: [ActionItem]           1:many, cascade delete
+  insight: EntryInsight?              1:1, cascade delete, inverse declared on EntryInsight
+  themes: [Theme]                     many-to-many, inverse declared on Theme (no @Relationship
+                                       macro here — SwiftData requires exactly one side to
+                                       declare `inverse:`)
+  actionItems: [ActionItem]           1:many, cascade delete, inverse declared on ActionItem
 
 EntryInsight
   summary: String, reflectionQuestion: String?
   mood: Mood, moodConfidence: Double
   analysisVersion: Int                bump when prompts/schemas change -> triggers re-analysis
   modelIdentifier: String             e.g. "system-language-model" (+ variant on iOS 27)
-  generatedAt: Date
+  generatedAt: Date, isPartial: Bool  true when the entry exceeded the context window and only
+                                       a prefix was analyzed
+  entry: JournalEntry?                inverse target of JournalEntry.insight
 
 Theme
   name: String (unique, normalised lowercase), displayName, firstSeen, lastSeen
-  entries: [JournalEntry]             inverse
-  occurrenceCount computed via query
+  entries: [JournalEntry]             many-to-many inverse of JournalEntry.themes,
+                                       deleteRule: .nullify — a deleted entry drops out of the
+                                       theme's `entries` array but the theme row survives
+  occurrenceCount: Int                computed as `entries.count`
 
 ActionItem
   title: String, isCompleted: Bool, completedAt: Date?, createdAt
-  entry: JournalEntry                 inverse
+  entry: JournalEntry?                inverse of JournalEntry.actionItems, deleteRule: .cascade
+                                       from the JournalEntry side. Optional (not the
+                                       non-optional shown in the original draft): SwiftData
+                                       nils the inverse side of a relationship during cascade
+                                       teardown, so a non-optional stored property here would
+                                       trap when the owning entry is deleted.
 
 WeeklyDigest
   weekStart: Date (unique), headline, narrative, highlights: [String]
   recurringThemes: [String], suggestedFocus: String?
   averageMoodScore: Double, entryCount: Int, generatedAt, analysisVersion
+  Standalone — no relationships — so it can be regenerated independently of the entries it
+  was computed from.
 ```
 
-Value types: `Mood` (five points, numeric score), `EntrySource`, `DateRange` helpers,
-`MoodTrendPoint` for charts.
+Delete rules, summarised: deleting a `JournalEntry` cascades its `EntryInsight` and
+`ActionItem`s to zero rows, and nullifies (does not delete) any attached `Theme`s. `Theme`
+and `WeeklyDigest` rows are never reachable by cascade from `JournalEntry`, so
+`JournalStore.deleteAll()` deletes them explicitly.
+
+Value types: `Mood` (five points, numeric score), `EntrySource`, `EntrySnapshot` (the
+`Sendable` projection of `JournalEntry` that crosses actor boundaries), `DateRange` helpers
+(half-open, `calendar`-parameterised statics for day/week/last-N-days), `EntryDaySection` +
+`groupedByDay` for list grouping, `TextStats` (word/character counts), `MoodTrendPoint` for
+charts.
 
 ### Access
 
@@ -99,6 +121,27 @@ Value types: `Mood` (five points, numeric score), `EntrySource`, `DateRange` hel
   digest writes, bulk operations) and exposes plain `Sendable` snapshots
   (`EntrySnapshot`) to other modules.
 - Views use `@Query` directly for lists; that is idiomatic SwiftUI and keeps the UI live.
+  Single-row swipe deletes go through the view's `@Environment(\.modelContext)` (main actor)
+  so `@Query` updates instantly; only bulk operations (`deleteAll`) go through `JournalStore`.
+
+### Isolation
+
+The package compiles with `.defaultIsolation(MainActor.self)`, so every declaration —
+including plain `Sendable` structs/enums, not just `@Model` classes — is `@MainActor`
+by default unless annotated. `@ModelActor` types run on their own actor, not the main
+actor, so anything they read or construct (model classes, and any value type whose
+initializer or computed properties they call, e.g. `Mood.score`, `DateRange`,
+`MoodTrendPoint`, `EntrySnapshot`, `TextStats`, `groupedByDay`) must be declared
+`nonisolated`. `@Model` classes are declared `@Model` then `nonisolated public final class …`
+— `nonisolated` must follow the `@Model` attribute, not precede it; putting `nonisolated`
+before `@Model` is rejected by macro expansion ("Expected declaration").
+
+### Schema migration policy
+
+Pre-release: **delete and reinstall** during development. `ReflectApp.init()` calls
+`ReflectModelContainer.make()` and `fatalError`s if it throws. No `VersionedSchema` /
+`SchemaMigrationPlan` exists yet and none is planned until the first TestFlight build, at
+which point this section must be updated before any further schema change ships.
 
 ## 5. ReflectIntelligence
 
