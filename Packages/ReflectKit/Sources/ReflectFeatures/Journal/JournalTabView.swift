@@ -19,6 +19,7 @@ enum EditorMode: Identifiable, Hashable {
 /// stack on compact width, so iPhone gets push navigation and iPad gets a side-by-side
 /// layout with no `horizontalSizeClass` branching.
 struct JournalTabView: View {
+    @Environment(\.modelContext) private var modelContext
     @State private var searchText = ""
     @State private var selectedEntryID: UUID?
     @State private var editorMode: EditorMode?
@@ -54,7 +55,7 @@ struct JournalTabView: View {
             }
         }
         .sheet(item: $editorMode) { mode in
-            EntryEditorView(mode: mode) {
+            EntryEditorView(mode: mode, context: modelContext) {
                 saveErrorMessage = String(
                     localized: "The last change to this entry couldn't be saved.",
                     bundle: .module

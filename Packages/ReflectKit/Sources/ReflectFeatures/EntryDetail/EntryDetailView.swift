@@ -83,7 +83,7 @@ struct EntryDetailView: View {
             }
         }
         .sheet(item: $editorMode) { mode in
-            EntryEditorView(mode: mode) {
+            EntryEditorView(mode: mode, context: modelContext) {
                 saveErrorMessage = String(
                     localized: "The last change to this entry couldn't be saved.",
                     bundle: .module
