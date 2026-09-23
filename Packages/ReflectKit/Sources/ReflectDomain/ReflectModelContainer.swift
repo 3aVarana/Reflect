@@ -3,7 +3,13 @@ import SwiftData
 
 /// Single place that knows the app's SwiftData schema.
 public enum ReflectModelContainer {
-    public static let schema = Schema([JournalEntry.self])
+    public static let schema = Schema([
+        JournalEntry.self,
+        EntryInsight.self,
+        Theme.self,
+        ActionItem.self,
+        WeeklyDigest.self
+    ])
 
     /// The on-disk container used by the app.
     public static func make() throws -> ModelContainer {

@@ -2,7 +2,7 @@ import Foundation
 
 /// A coarse, five-point mood scale. Deliberately small so the on-device model
 /// classifies reliably and the UI can render it as a single glyph or colour.
-public enum Mood: String, Codable, CaseIterable, Sendable, Hashable {
+nonisolated public enum Mood: String, Codable, CaseIterable, Sendable, Hashable {
     case veryLow
     case low
     case neutral

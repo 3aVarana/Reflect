@@ -19,7 +19,7 @@ Legend: **Showcase** = what this phase demonstrates in the portfolio.
 
 ---
 
-## Phase 1 — Journal core (Domain + basic UI) · ~2 days
+## Phase 1 — Journal core (Domain + basic UI) ✅ (done 2026-09-22) · ~2 days
 
 **Goal:** a complete, pleasant journal with no AI at all.
 
@@ -42,6 +42,12 @@ Acceptance
 - iPad shows list/detail side by side; iPhone uses tabs.
 
 **Showcase:** SwiftData relationships + `@ModelActor`, adaptive SwiftUI navigation.
+
+Verified: app builds, and all `ReflectDomain`/`ReflectFeatures` package tests pass, on
+iPhone 17 (iOS 27.0) simulator. The manual simulator pass (create/edit/search/delete,
+relaunch persistence, iPad split view — acceptance items 9–15 in the phase plan) has **not**
+been run yet and remains outstanding; automated coverage (build + package tests,
+acceptance items 1–8) is what has actually been verified so far.
 
 ---
 
