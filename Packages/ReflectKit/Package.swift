@@ -35,7 +35,7 @@ let package = Package(
         .testTarget(name: "ReflectDomainTests", dependencies: ["ReflectDomain"], swiftSettings: swiftSettings),
         .testTarget(
             name: "ReflectIntelligenceTests",
-            dependencies: ["ReflectIntelligence"],
+            dependencies: ["ReflectIntelligence", "ReflectDomain"],
             swiftSettings: swiftSettings
         ),
         .testTarget(name: "ReflectFeaturesTests", dependencies: ["ReflectFeatures"], swiftSettings: swiftSettings)
