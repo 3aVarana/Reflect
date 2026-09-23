@@ -51,7 +51,7 @@ acceptance items 1–8) is what has actually been verified so far.
 
 ---
 
-## Phase 2 — Intelligence foundation · ~3 days
+## Phase 2 — Intelligence foundation ✅ (done 2026-09-23) · ~3 days
 
 **Goal:** every saved entry gets a mood, summary and reflection question, streamed live.
 
@@ -80,6 +80,38 @@ Acceptance
 
 **Showcase:** guided generation, streaming partials, availability + error handling, actor
 isolation around a non-Sendable session.
+
+Verified: `xcodebuild build` for the `Reflect` scheme succeeds with no errors and no new
+warnings, and `ReflectKit-Package` tests pass on iPhone 17 (iOS 27.0) simulator —
+`ReflectDomainTests` (41 tests, 7 suites), `ReflectFeaturesTests` (26 tests, 4 suites) and
+`ReflectIntelligenceTests` (37 tests, 7 suites, including the gated `LiveEntryAnalysisTests`
+suite below). All 104 tests pass; nothing is failing or unaccounted for.
+
+`LiveEntryAnalysisTests` — the suite that touches the real on-device model — is gated by a
+`CapabilityProbe` that does more than check `SystemLanguageModel.default.isAvailable`: on this
+project's sandboxed build host, `isAvailable` reports `true` (the eligibility/guardrail check
+passes) while the on-device model's assets are not actually installed, so a bare `isAvailable`
+gate would have let all ten golden-entry cases run and fail. The probe performs one real,
+cheap generation up front and classifies the outcome:
+- skip only when `!isAvailable`, or when the probe's own attempt fails with exactly
+  `IntelligenceError.modelUnavailable` — the case `IntelligenceError.init` now maps a raw,
+  undocumented `FoundationModels` `NSError` to, by matching its domain/code chain
+  (`FoundationModels.LanguageModelError` wrapping `ModelManagerServices.ModelManagerError` /
+  `com.apple.UnifiedAssetFramework`), never by string-matching a description;
+- run (and let the ten real cases fail loudly) on any other outcome — `.malformedOutput`,
+  `.refused`, `.throttled`, `.unknown`, or a stream ending with no `.finished` and no thrown
+  error — so a genuinely broken engine is never folded into a silent skip.
+
+On this pass's build host, the probe's own generation attempt failed with exactly the diagnosed
+`Error Domain=com.apple.UnifiedAssetFramework Code=5000 "There are no underlying assets ...
+for asset set com.apple.modelcatalog"` chain, which `IntelligenceError.init` now maps to
+`.modelUnavailable` (confirmed by temporary instrumentation during this fix, then removed) —
+so the suite correctly **skipped** rather than ran-and-failed or silently passed. This needs
+re-running on a Mac with Apple Intelligence fully downloaded before acceptance item 14 (mood/
+summary/question actually streaming into the editor) can be called green; that remains
+outstanding. The manual simulator/device pass (acceptance items 14–17: live streaming into the
+editor's insight panel, list/detail refresh, a provoked guardrail refusal, iPad split view) has
+**not** been run and remains outstanding, exactly as Phase 1's manual pass was recorded.
 
 ---
 
