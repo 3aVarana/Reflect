@@ -1,10 +1,13 @@
 import SwiftUI
 import SwiftData
 import ReflectDomain
+import ReflectIntelligence
 
 /// Top-level navigation: three tabs, each a self-contained feature. The app target injects
-/// the model container and `JournalStore` through the environment.
+/// the model container, `JournalStore` and `EnrichmentCoordinator` through the environment.
 public struct ReflectRootView: View {
+    @Environment(\.enrichmentCoordinator) private var coordinator
+
     public init() {}
 
     public var body: some View {
@@ -38,6 +41,13 @@ public struct ReflectRootView: View {
                     Image(systemName: "gearshape")
                 }
             }
+        }
+        // Gated on availability so an ineligible device never queues a doomed request for
+        // every existing entry at launch.
+        .task {
+            guard IntelligenceAvailability.current == .available, let coordinator else { return }
+            await coordinator.prewarm()
+            await coordinator.enqueueStale()
         }
     }
 }

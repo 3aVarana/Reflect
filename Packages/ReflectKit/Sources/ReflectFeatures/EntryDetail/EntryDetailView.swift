@@ -36,7 +36,16 @@ struct EntryDetailView: View {
                         Text(entry.text)
                             .font(.body)
                             .textSelection(.enabled)
-                        InsightPlaceholderView()
+                        InsightPanel(entryID: entryID, insight: entry.insight, text: entry.text)
+                            // Forces a brand-new `InsightPanel` (and therefore a brand-new
+                            // `InsightPanelModel`) whenever the entry changes — e.g. selecting
+                            // a different row in the iPad split view's detail column, which
+                            // reuses this view's identity across selections. Without this,
+                            // `InsightPanel`'s `@State private var model` is "first instance
+                            // wins": it would stay pinned to whichever `entryID` it first saw,
+                            // silently rendering (and, on "Re-analyze", overwriting) the wrong
+                            // entry. See the critical review finding this documents.
+                            .id(entryID)
                     }
                     .padding(Spacing.l)
                 }
