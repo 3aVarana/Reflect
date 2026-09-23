@@ -139,6 +139,88 @@ public actor JournalStore {
         try modelContext.fetchCount(FetchDescriptor<JournalEntry>())
     }
 
+    /// Persists an analysis result. Mutates the existing `EntryInsight` row in place when one
+    /// already exists (rather than inserting a second row and orphaning the old one), and
+    /// always denormalises `entry.mood` — the column the list glyph reads. Deliberately never
+    /// touches `entry.updatedAt`: enrichment is not a user edit, and `idsNeedingAnalysis`
+    /// compares `insight.generatedAt` against `entry.updatedAt` to detect staleness, so
+    /// advancing `updatedAt` here would make every freshly-analyzed entry look stale again.
+    public func applyInsight(entryID: UUID, draft: InsightDraft) throws -> EntrySnapshot? {
+        guard let entry = try entry(id: entryID) else { return nil }
+        if let insight = entry.insight {
+            insight.summary = draft.summary
+            insight.reflectionQuestion = draft.reflectionQuestion
+            insight.mood = draft.mood
+            insight.moodConfidence = draft.moodConfidence
+            insight.analysisVersion = draft.analysisVersion
+            insight.modelIdentifier = draft.modelIdentifier
+            insight.generatedAt = draft.generatedAt
+            insight.isPartial = draft.isPartial
+        } else {
+            let insight = EntryInsight(
+                summary: draft.summary,
+                reflectionQuestion: draft.reflectionQuestion,
+                mood: draft.mood,
+                moodConfidence: draft.moodConfidence,
+                analysisVersion: draft.analysisVersion,
+                modelIdentifier: draft.modelIdentifier,
+                generatedAt: draft.generatedAt,
+                isPartial: draft.isPartial
+            )
+            modelContext.insert(insight)
+            entry.insight = insight
+        }
+        entry.mood = draft.mood
+        try modelContext.save()
+        return EntrySnapshot(entry)
+    }
+
+    /// Drops the entry's insight (if any) and clears the denormalised `mood` column. Used by
+    /// "Re-analyze" and after a refusal, so a stale insight is never left next to text that
+    /// now says something else.
+    public func clearInsight(entryID: UUID) throws -> Bool {
+        guard let entry = try entry(id: entryID) else { return false }
+        if let insight = entry.insight {
+            modelContext.delete(insight)
+            entry.insight = nil
+        }
+        entry.mood = nil
+        try modelContext.save()
+        return true
+    }
+
+    /// Entries that need a fresh analysis pass: no insight yet, an insight from an older
+    /// schema/prompt version, or an insight generated before the entry's last edit. Filtered
+    /// in Swift rather than a `#Predicate` — predicates over an optional to-one relationship's
+    /// properties are a known SwiftData trap, and this dataset is small enough that a Swift
+    /// filter over an already-fetched array costs nothing worth optimising for.
+    public func idsNeedingAnalysis(
+        currentVersion: Int = AnalysisVersion.current,
+        limit: Int? = nil
+    ) throws -> [UUID] {
+        var descriptor = FetchDescriptor<JournalEntry>()
+        descriptor.sortBy = [SortDescriptor(\.createdAt, order: .reverse)]
+        let entries = try modelContext.fetch(descriptor)
+        var ids: [UUID] = []
+        for entry in entries {
+            guard !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            let needsAnalysis: Bool
+            if let insight = entry.insight {
+                needsAnalysis = insight.analysisVersion < currentVersion || insight.generatedAt < entry.updatedAt
+            } else {
+                needsAnalysis = true
+            }
+            guard needsAnalysis else { continue }
+            ids.append(entry.id)
+            if let limit, ids.count >= limit {
+                break
+            }
+        }
+        return ids
+    }
+
     private func entry(id: UUID) throws -> JournalEntry? {
         var descriptor = FetchDescriptor<JournalEntry>(
             predicate: #Predicate<JournalEntry> { $0.id == id }
