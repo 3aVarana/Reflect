@@ -25,10 +25,14 @@ enum InsightPanelState: Equatable {
 /// documents.)
 @Observable final class InsightPanelModel {
     private(set) var state: InsightPanelState
-    /// The `InsightDraft` from the most recent `.finished` update, retained here because the
-    /// editor never has a persisted `EntryInsight` to fall back on (it always passes `insight:
-    /// nil`): without this, everything the user just watched stream in would vanish the
-    /// instant analysis completes and `state` becomes `.ready`.
+    /// What the panel renders in `.ready`: seeded from the entry's persisted insight (if any)
+    /// at construction, then replaced by the payload of every `.finished` update. Seeding
+    /// matters across launches — a fresh process has an empty coordinator replay cache, so
+    /// without it an entry analysed last session would sit in `.idle` forever, showing
+    /// "Insights will appear here…" over a row that is already in the store. Replacing
+    /// matters within a session — a brand-new entry has no persisted row while the user
+    /// watches it stream in, so without it everything would vanish the instant `state`
+    /// becomes `.ready`.
     private(set) var lastDraft: InsightDraft?
 
     private let entryID: UUID
@@ -38,14 +42,30 @@ enum InsightPanelState: Equatable {
     /// resolved), rather than deferring the model's construction itself to `.onAppear`.
     private var coordinator: EnrichmentCoordinator?
 
+    /// - Parameter persistedInsight: the entry's stored insight, if it has one. When
+    ///   availability is `.available` the model starts in `.ready` with `lastDraft` set to it,
+    ///   so a relaunch shows last session's result immediately; any later coordinator update
+    ///   for this entry still wins. Ignored when availability is not `.available`: the
+    ///   unavailable message takes precedence over stale content, and `.ready` would offer a
+    ///   "Re-analyze" button that cannot work.
     init(
         entryID: UUID,
         coordinator: EnrichmentCoordinator?,
-        availability: IntelligenceAvailability = .current
+        availability: IntelligenceAvailability,
+        persistedInsight: InsightDraft? = nil
     ) {
         self.entryID = entryID
         self.coordinator = coordinator
-        self.state = availability == .available ? .idle : .unavailable(availability)
+        guard availability == .available else {
+            self.state = .unavailable(availability)
+            return
+        }
+        if let persistedInsight {
+            self.lastDraft = persistedInsight
+            self.state = .ready
+        } else {
+            self.state = .idle
+        }
     }
 
     /// Supplies the coordinator once it becomes known. A no-op once a coordinator is already

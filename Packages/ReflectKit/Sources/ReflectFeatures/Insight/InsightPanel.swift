@@ -4,14 +4,14 @@ import ReflectDomain
 import ReflectIntelligence
 
 /// The real insight panel — replaces `InsightPlaceholderView`, "the seam Phase 2 replaces".
-/// Renders mood, summary and reflection question, preferring live streaming values over the
-/// stored `insight` so the editor visibly fills in as generation streams.
+/// Renders mood, summary and reflection question. The persisted `insight` (as a value, not a
+/// model object) seeds the model so a relaunch shows last session's result at once; live
+/// streaming values then take over so the editor visibly fills in as generation streams.
 struct InsightPanel: View {
     @Environment(\.enrichmentCoordinator) private var coordinator
     @State private var model: InsightPanelModel
 
     private let entryID: UUID
-    private let insight: EntryInsight?
     private let text: String
 
     /// The model is built here, eagerly, exactly like `EntryEditorViewModel` in
@@ -28,14 +28,18 @@ struct InsightPanel: View {
     /// argument to `State(initialValue:)`, even though `@State` itself only keeps the *first*
     /// resulting instance) on every keystroke. A live `.current` there would mean a
     /// FoundationModels availability call per keystroke; the cached value reads it once.
-    init(entryID: UUID, insight: EntryInsight?, text: String) {
+    ///
+    /// `insight` is only read here, to seed the model: `@State` keeps the first instance, so a
+    /// later change to the stored row reaches the panel through the coordinator's update
+    /// stream (which the model observes), not through this argument.
+    init(entryID: UUID, insight: InsightDraft?, text: String) {
         self.entryID = entryID
-        self.insight = insight
         self.text = text
         _model = State(initialValue: InsightPanelModel(
             entryID: entryID,
             coordinator: nil,
-            availability: .cachedAtLaunch
+            availability: .cachedAtLaunch,
+            persistedInsight: insight
         ))
     }
 
@@ -49,7 +53,7 @@ struct InsightPanel: View {
                     Image(systemName: "sparkles")
                 }
                 content
-                if (model.lastDraft?.isPartial ?? insight?.isPartial) == true {
+                if model.lastDraft?.isPartial == true {
                     Text(
                         "Partly analysed — this entry was long, so only the first part was used.",
                         bundle: .module
@@ -108,13 +112,13 @@ struct InsightPanel: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(spacing: Spacing.s) {
                 ProgressView()
-                MoodGlyph(mood: partial.mood ?? insight?.mood)
+                MoodGlyph(mood: partial.mood ?? model.lastDraft?.mood)
             }
-            if let summary = partial.summary ?? insight?.summary {
+            if let summary = partial.summary ?? model.lastDraft?.summary {
                 Text(summary)
                     .font(.body)
             }
-            if let question = partial.reflectionQuestion ?? insight?.reflectionQuestion {
+            if let question = partial.reflectionQuestion ?? model.lastDraft?.reflectionQuestion {
                 Text(question)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -122,21 +126,20 @@ struct InsightPanel: View {
         }
     }
 
-    /// Prefers the model's own `lastDraft` (the payload of the most recent `.finished` update)
-    /// over the `insight` passed in at construction: in the editor, `insight` is always `nil`
-    /// (there is no persisted row to read from yet), so without this, everything the user just
-    /// watched stream in would vanish the instant analysis completes.
+    /// Renders `model.lastDraft`, the single source for ready content: it is the persisted
+    /// insight on a relaunch and the most recent `.finished` payload once analysis has run in
+    /// this session (a brand-new entry has no persisted row while it streams in).
     @ViewBuilder
     private var readyContent: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             HStack(spacing: Spacing.s) {
-                MoodGlyph(mood: model.lastDraft?.mood ?? insight?.mood)
-                if let summary = model.lastDraft?.summary ?? insight?.summary {
+                MoodGlyph(mood: model.lastDraft?.mood)
+                if let summary = model.lastDraft?.summary {
                     Text(summary)
                         .font(.body)
                 }
             }
-            if let question = model.lastDraft?.reflectionQuestion ?? insight?.reflectionQuestion {
+            if let question = model.lastDraft?.reflectionQuestion {
                 Text(question)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -189,7 +192,7 @@ struct InsightPanel: View {
     let store = JournalStore(modelContainer: container)
     let coordinator = EnrichmentCoordinator(store: store, analyzer: FakeEntryAnalyzer.succeeding())
 
-    return InsightPanel(entryID: entry.id, insight: insight, text: entry.text)
+    return InsightPanel(entryID: entry.id, insight: InsightDraft(insight), text: entry.text)
         .environment(\.enrichmentCoordinator, coordinator)
         .padding()
 }

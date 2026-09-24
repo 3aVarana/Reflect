@@ -46,7 +46,7 @@ struct EntryEditorView: View {
                 .focused($isFocused)
                 .frame(maxHeight: .infinity)
                 if let entryID = vm.entryID {
-                    InsightPanel(entryID: entryID, insight: nil, text: vm.text)
+                    InsightPanel(entryID: entryID, insight: vm.persistedInsight, text: vm.text)
                         // See the matching `.id(entryID)` in `EntryDetailView`: this entryID is
                         // fixed for the lifetime of one editor session, but applying it here
                         // too keeps both call sites consistent and safe against future reuse.

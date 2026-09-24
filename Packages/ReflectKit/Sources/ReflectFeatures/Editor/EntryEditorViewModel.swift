@@ -25,6 +25,12 @@ final class EntryEditorViewModel {
     /// while this is set, so a transient read failure can never overwrite/delete the user's
     /// existing entry with the empty text the failed load left behind.
     private(set) var loadFailed = false
+    /// The entry's stored insight at `load()` time, for `.edit` mode, as a value so this model
+    /// never holds a SwiftData object that `JournalStore.clearInsight` may delete from another
+    /// context. Seeds `InsightPanel` so reopening an analysed entry shows its insight at once
+    /// instead of "Insights will appear here…" until the next save. Never `.new` mode: there is
+    /// no row yet.
+    private(set) var persistedInsight: InsightDraft?
     /// Invoked when `finish()` (the flush that runs on dismiss, from `.onDisappear`) ends in
     /// `.failed`. `finish()` fires after the editor has already left the screen, so its own
     /// `saveState` can never be rendered by the footer that's being torn down with it; the
@@ -61,6 +67,7 @@ final class EntryEditorViewModel {
             if let entry = try context.fetch(descriptor).first {
                 text = entry.text
                 stats = TextStats(entry.text)
+                persistedInsight = entry.insight.map(InsightDraft.init)
             }
         } catch {
             loadFailed = true

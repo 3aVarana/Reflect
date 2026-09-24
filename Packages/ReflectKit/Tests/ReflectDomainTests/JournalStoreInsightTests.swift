@@ -189,4 +189,33 @@ struct JournalStoreInsightTests {
         let inRange = InsightDraft(summary: "s", mood: .neutral, moodConfidence: 0.42, modelIdentifier: "m")
         #expect(inRange.moodConfidence == 0.42)
     }
+
+    @Test func draftFromEntryInsightCopiesEveryFieldAndStillClampsConfidence() throws {
+        let generatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let insight = EntryInsight(
+            summary: "Stored summary",
+            reflectionQuestion: "Stored question",
+            mood: .low,
+            moodConfidence: 0.42,
+            analysisVersion: 7,
+            modelIdentifier: "stored-model",
+            generatedAt: generatedAt,
+            isPartial: true
+        )
+
+        let draft = InsightDraft(insight)
+
+        #expect(draft.summary == "Stored summary")
+        #expect(draft.reflectionQuestion == "Stored question")
+        #expect(draft.mood == .low)
+        #expect(draft.moodConfidence == 0.42)
+        #expect(draft.analysisVersion == 7)
+        #expect(draft.modelIdentifier == "stored-model")
+        #expect(draft.generatedAt == generatedAt)
+        #expect(draft.isPartial)
+
+        // A row written before clamping existed must still project into range.
+        insight.moodConfidence = 3.0
+        #expect(InsightDraft(insight).moodConfidence == 1.0)
+    }
 }

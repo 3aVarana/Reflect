@@ -36,4 +36,22 @@ nonisolated public struct InsightDraft: Sendable, Equatable {
         self.analysisVersion = analysisVersion
         self.generatedAt = generatedAt
     }
+
+    /// Projects a persisted `EntryInsight` into a value. Mirrors `EntrySnapshot.init(_:)`: the
+    /// caller reads the model object once, on whichever context owns it, and keeps only
+    /// `Sendable` values afterwards — so a view or view model can hold what an entry's insight
+    /// *said* without holding a live model object that another context may delete from under
+    /// it (e.g. `JournalStore.clearInsight` on "Re-analyze").
+    nonisolated public init(_ insight: EntryInsight) {
+        self.init(
+            summary: insight.summary,
+            reflectionQuestion: insight.reflectionQuestion,
+            mood: insight.mood,
+            moodConfidence: insight.moodConfidence,
+            modelIdentifier: insight.modelIdentifier,
+            isPartial: insight.isPartial,
+            analysisVersion: insight.analysisVersion,
+            generatedAt: insight.generatedAt
+        )
+    }
 }

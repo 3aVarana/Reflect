@@ -30,6 +30,106 @@ struct InsightPanelModelTests {
         #expect(model.state == .idle)
     }
 
+    /// Stored, not computed: `InsightDraft.generatedAt` defaults to `.now`, so a computed
+    /// property would hand every access a draft that is `!=` the one the model was seeded with.
+    private let storedInsight = InsightDraft(
+        summary: "Stored from last session",
+        reflectionQuestion: "Still true today?",
+        mood: .good,
+        moodConfidence: 0.7,
+        modelIdentifier: "test",
+        generatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    @Test func persistedInsightStartsReadyWithThatDraftWhenAvailable() {
+        // Regression for the relaunch bug: an entry analysed in a previous session must render
+        // its stored insight immediately. A fresh process has an empty coordinator replay
+        // cache, so nothing else will ever move the model out of `.idle`.
+        let model = InsightPanelModel(
+            entryID: UUID(),
+            coordinator: nil,
+            availability: .available,
+            persistedInsight: storedInsight
+        )
+        #expect(model.state == .ready)
+        #expect(model.lastDraft == storedInsight)
+        #expect(model.canReanalyze)
+    }
+
+    @Test func persistedInsightIsIgnoredWhenUnavailable() {
+        // The unavailable message wins over stale content, and `.ready` would offer a
+        // "Re-analyze" button that cannot work.
+        let model = InsightPanelModel(
+            entryID: UUID(),
+            coordinator: nil,
+            availability: .modelNotReady,
+            persistedInsight: storedInsight
+        )
+        #expect(model.state == .unavailable(.modelNotReady))
+        #expect(model.lastDraft == nil)
+        #expect(!model.canReanalyze)
+    }
+
+    @Test func persistedInsightSurvivesObservingACoordinatorWithNoHistoryForTheEntry() async throws {
+        // The relaunch shape end to end: a live coordinator that has never seen this entry
+        // (nothing to replay) must not disturb the seeded `.ready` state.
+        let container = try ReflectModelContainer.makeInMemory()
+        let store = JournalStore(modelContainer: container)
+        let entry = try await store.insert(text: "An entry")
+        let coordinator = EnrichmentCoordinator(
+            store: store,
+            analyzer: FakeEntryAnalyzer.succeeding(),
+            retryDelay: { _ in }
+        )
+        let model = InsightPanelModel(
+            entryID: entry.id,
+            coordinator: coordinator,
+            availability: .available,
+            persistedInsight: storedInsight
+        )
+        let observeTask = Task { await model.observe() }
+        for _ in 0..<50 { await Task.yield() }
+
+        #expect(model.state == .ready)
+        #expect(model.lastDraft == storedInsight)
+
+        observeTask.cancel()
+    }
+
+    @Test func aLaterFinishedUpdateReplacesThePersistedInsight() async throws {
+        // Editing an analysed entry: the seeded draft is a starting point, not a pin. The
+        // coordinator's next `.finished` for this entry must win.
+        let container = try ReflectModelContainer.makeInMemory()
+        let store = JournalStore(modelContainer: container)
+        let entry = try await store.insert(text: "An entry")
+        let analyzer = FakeEntryAnalyzer(script: [
+            .events([.finished(AnalysisResult(
+                mood: .low,
+                moodConfidence: 0.5,
+                summary: "Fresh from this session",
+                reflectionQuestion: nil,
+                isPartialText: false,
+                modelIdentifier: "test"
+            ))])
+        ])
+        let coordinator = EnrichmentCoordinator(store: store, analyzer: analyzer, retryDelay: { _ in })
+        let model = InsightPanelModel(
+            entryID: entry.id,
+            coordinator: coordinator,
+            availability: .available,
+            persistedInsight: storedInsight
+        )
+        let observeTask = Task { await model.observe() }
+        await coordinator.enqueue(entryID: entry.id, text: "An entry, edited")
+
+        await waitFor { model.lastDraft?.summary == "Fresh from this session" }
+        #expect(model.state == .ready)
+        #expect(model.lastDraft?.summary == "Fresh from this session")
+        #expect(model.lastDraft?.mood == .low)
+
+        observeTask.cancel()
+    }
+
     @Test func initialStateNeverTransitionsToQueuedOnItsOwn() {
         // Regression: constructing the model must never itself kick off observation. Only an
         // explicit `observe()` call (driven by `.task(id:)` in the real view) does that.

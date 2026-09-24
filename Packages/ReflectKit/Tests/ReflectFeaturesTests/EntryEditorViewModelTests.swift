@@ -67,6 +67,48 @@ struct EntryEditorViewModelTests {
         #expect(vm.text == "Existing text")
     }
 
+    @Test func editModeLoadExposesThePersistedInsightAsAValue() throws {
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        let insight = EntryInsight(
+            summary: "A stored summary",
+            reflectionQuestion: "A stored question",
+            mood: .great,
+            moodConfidence: 0.9,
+            modelIdentifier: "test"
+        )
+        context.insert(entry)
+        context.insert(insight)
+        entry.insight = insight
+        entry.mood = .great
+        try context.save()
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        vm.load()
+
+        #expect(vm.persistedInsight?.summary == "A stored summary")
+        #expect(vm.persistedInsight?.reflectionQuestion == "A stored question")
+        #expect(vm.persistedInsight?.mood == .great)
+    }
+
+    @Test func editModeLoadLeavesPersistedInsightNilForAnUnanalysedEntry() throws {
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        context.insert(entry)
+        try context.save()
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        vm.load()
+
+        #expect(vm.persistedInsight == nil)
+    }
+
+    @Test func newModeNeverHasAPersistedInsight() throws {
+        let vm = EntryEditorViewModel(mode: .new, context: try makeContext())
+        vm.load()
+        #expect(vm.persistedInsight == nil)
+    }
+
     @Test func editModeClearedToEmptyAndFinishDeletesRow() throws {
         let context = try makeContext()
         let entry = JournalEntry(text: "Existing text")

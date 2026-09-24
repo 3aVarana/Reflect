@@ -36,7 +36,11 @@ struct EntryDetailView: View {
                         Text(entry.text)
                             .font(.body)
                             .textSelection(.enabled)
-                        InsightPanel(entryID: entryID, insight: entry.insight, text: entry.text)
+                        InsightPanel(
+                            entryID: entryID,
+                            insight: entry.insight.map(InsightDraft.init),
+                            text: entry.text
+                        )
                             // Forces a brand-new `InsightPanel` (and therefore a brand-new
                             // `InsightPanelModel`) whenever the entry changes — e.g. selecting
                             // a different row in the iPad split view's detail column, which
