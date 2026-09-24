@@ -67,6 +67,48 @@ struct EntryEditorViewModelTests {
         #expect(vm.text == "Existing text")
     }
 
+    @Test func editModeLoadExposesThePersistedInsightAsAValue() throws {
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        let insight = EntryInsight(
+            summary: "A stored summary",
+            reflectionQuestion: "A stored question",
+            mood: .great,
+            moodConfidence: 0.9,
+            modelIdentifier: "test"
+        )
+        context.insert(entry)
+        context.insert(insight)
+        entry.insight = insight
+        entry.mood = .great
+        try context.save()
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        vm.load()
+
+        #expect(vm.persistedInsight?.summary == "A stored summary")
+        #expect(vm.persistedInsight?.reflectionQuestion == "A stored question")
+        #expect(vm.persistedInsight?.mood == .great)
+    }
+
+    @Test func editModeLoadLeavesPersistedInsightNilForAnUnanalysedEntry() throws {
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        context.insert(entry)
+        try context.save()
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        vm.load()
+
+        #expect(vm.persistedInsight == nil)
+    }
+
+    @Test func newModeNeverHasAPersistedInsight() throws {
+        let vm = EntryEditorViewModel(mode: .new, context: try makeContext())
+        vm.load()
+        #expect(vm.persistedInsight == nil)
+    }
+
     @Test func editModeClearedToEmptyAndFinishDeletesRow() throws {
         let context = try makeContext()
         let entry = JournalEntry(text: "Existing text")
@@ -197,6 +239,71 @@ struct EntryEditorViewModelTests {
         #expect(failureReported)
     }
 
+    @Test func onSavedFiresExactlyOnceWithTheEntryIDAndCurrentTextOnASuccessfulFlush() throws {
+        let context = try makeContext()
+        let vm = EntryEditorViewModel(mode: .new, context: context)
+        vm.load()
+
+        var calls: [(id: UUID, text: String)] = []
+        vm.onSaved = { id, text in calls.append((id, text)) }
+
+        vm.text = "hello"
+        vm.textChanged()
+        vm.flush()
+
+        #expect(calls.count == 1)
+        #expect(calls.first?.text == "hello")
+        #expect(calls.first?.id == vm.entryID)
+    }
+
+    @Test func onSavedDoesNotFireForBlankText() throws {
+        // Regression: flush() on blank text over an existing row still reports `.saved` (the
+        // row is kept alive), but that must not be treated as something worth enqueueing for
+        // enrichment.
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        context.insert(entry)
+        try context.save()
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        vm.load()
+
+        var callCount = 0
+        vm.onSaved = { _, _ in callCount += 1 }
+
+        vm.text = "   "
+        vm.textChanged()
+        vm.flush()
+
+        if case .saved = vm.saveState {
+            // expected: flush() on blank text over an existing row still reports .saved.
+        } else {
+            Issue.record("Expected saveState to be .saved, was \(vm.saveState)")
+        }
+        #expect(callCount == 0)
+    }
+
+    @Test func flushStillReportsSavedWhenOnSavedIsNil() throws {
+        // Enrichment must never gate saving: with no `onSaved` handler at all, flush() still
+        // succeeds and inserts exactly one row.
+        let context = try makeContext()
+        let vm = EntryEditorViewModel(mode: .new, context: context)
+        vm.load()
+        #expect(vm.onSaved == nil)
+
+        vm.text = "hello"
+        vm.textChanged()
+        vm.flush()
+
+        if case .saved = vm.saveState {
+            // expected
+        } else {
+            Issue.record("Expected saveState to be .saved, was \(vm.saveState)")
+        }
+        let entries = try context.fetch(FetchDescriptor<JournalEntry>())
+        #expect(entries.count == 1)
+    }
+
     @Test func hasEditedStaysFalseUntilTextChangedIsCalled() throws {
         let context = try makeContext()
         let entry = JournalEntry(text: "Existing text")
@@ -210,5 +317,32 @@ struct EntryEditorViewModelTests {
         vm.text = "Existing text edited"
         vm.textChanged()
         #expect(vm.hasEdited == true)
+    }
+
+    @Test func openingAnExistingEntryAndFinishingWithoutTypingDoesNotEnqueueOrBumpUpdatedAt() throws {
+        // Regression for the `hasEdited` guard's actual *consequence*, not just the flag:
+        // `hasEditedStaysFalseUntilTextChangedIsCalled` above only pins `hasEdited` itself, so
+        // nothing would fail if a future change re-added an unguarded `onSaved?` call or
+        // dropped `if hasEdited || loadFailed` in `finish()`. A pure open-and-close of an
+        // existing entry (load, then finish, with nothing typed) must not call `onSaved` and
+        // must not move `updatedAt` — either would cost a needless generation and re-stale an
+        // already-current insight for the next launch's sweep.
+        let context = try makeContext()
+        let entry = JournalEntry(text: "Existing text")
+        context.insert(entry)
+        try context.save()
+        let originalUpdatedAt = entry.updatedAt
+
+        let vm = EntryEditorViewModel(mode: .edit(entry.id), context: context)
+        var onSavedCallCount = 0
+        vm.onSaved = { _, _ in onSavedCallCount += 1 }
+
+        vm.load()
+        vm.finish()
+
+        #expect(onSavedCallCount == 0)
+        let entries = try context.fetch(FetchDescriptor<JournalEntry>())
+        let reloaded = try #require(entries.first)
+        #expect(reloaded.updatedAt == originalUpdatedAt)
     }
 }

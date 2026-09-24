@@ -1,7 +1,10 @@
 # Reflect — Architecture
 
 Status: v1 baseline, decided 2026-09-22. Updated 2026-09-22 for Phase 1 (final schema
-relationships, delete rules and migration policy). Update this file when a decision changes.
+relationships, delete rules and migration policy). Updated 2026-09-23 for Phase 2 (§4
+`InsightDraft` + `JournalStore` insight methods; §5 rewritten to match the implemented
+`ReflectIntelligence` surface and its four documented deviations from this baseline). Update
+this file when a decision changes.
 
 ## 1. Product in one paragraph
 
@@ -109,17 +112,31 @@ and `WeeklyDigest` rows are never reachable by cascade from `JournalEntry`, so
 `JournalStore.deleteAll()` deletes them explicitly.
 
 Value types: `Mood` (five points, numeric score), `EntrySource`, `EntrySnapshot` (the
-`Sendable` projection of `JournalEntry` that crosses actor boundaries), `DateRange` helpers
-(half-open, `calendar`-parameterised statics for day/week/last-N-days), `EntryDaySection` +
-`groupedByDay` for list grouping, `TextStats` (word/character counts), `MoodTrendPoint` for
-charts.
+`Sendable` projection of `JournalEntry` that crosses actor boundaries), `InsightDraft` (the
+`Sendable` projection of an analysis result that crosses from `ReflectIntelligence`'s
+enrichment actor into `JournalStore`, clamping `moodConfidence` into `0...1` since guided
+generation is not a hard constraint), `DateRange` helpers (half-open, `calendar`-parameterised
+statics for day/week/last-N-days), `EntryDaySection` + `groupedByDay` for list grouping,
+`TextStats` (word/character counts), `MoodTrendPoint` for charts.
 
 ### Access
 
 - `ReflectModelContainer.make()` / `.makeInMemory()` own the schema.
 - `JournalStore: @ModelActor` performs all background reads/writes (enrichment results,
   digest writes, bulk operations) and exposes plain `Sendable` snapshots
-  (`EntrySnapshot`) to other modules.
+  (`EntrySnapshot`) to other modules. Phase 2 added three insight methods, all row-by-row (see
+  the `deleteAll` comment below on why batch operations are avoided) and all saving before
+  returning:
+  - `applyInsight(entryID:draft:) -> EntrySnapshot?` — mutates the entry's existing
+    `EntryInsight` in place if one exists (never inserts a second row), otherwise creates one;
+    also sets the denormalised `entry.mood`. Never touches `entry.updatedAt` — enrichment is
+    not a user edit.
+  - `clearInsight(entryID:) -> Bool` — removes the entry's insight (if any) and nils `mood`.
+    Used by "Re-analyze" and after a guardrail refusal.
+  - `idsNeedingAnalysis(currentVersion:limit:) -> [UUID]` — entries with no insight, an
+    insight from an older `analysisVersion`, or an insight generated before the entry's last
+    edit, filtered in Swift (not a `#Predicate`) since predicates over an optional to-one
+    relationship's properties are a known SwiftData trap.
 - Views use `@Query` directly for lists; that is idiomatic SwiftUI and keeps the UI live.
   Single-row swipe deletes go through the view's `@Environment(\.modelContext)` (main actor)
   so `@Query` updates instantly; only bulk operations (`deleteAll`) go through `JournalStore`.
@@ -145,70 +162,158 @@ which point this section must be updated before any further schema change ships.
 
 ## 5. ReflectIntelligence
 
-### Public surface
+Phase 2 (done 2026-09-23) implemented the analysis half of this module — mood, summary and
+reflection question, streamed. Four deviations from the v1 baseline below, and why:
+
+1. **The streaming protocol carries `AnalysisEvent`/`AnalysisPartial`, not
+   `EntryAnalysis.PartiallyGenerated`.** `PartiallyGenerated` refines
+   `ConvertibleFromGeneratedContent: SendableMetatype`, which is **not** `Sendable` — it cannot
+   cross the actor boundary from `IntelligenceEngine` out to `EnrichmentCoordinator` and
+   `ReflectFeatures`. `AnalysisEvent` (`.partial(AnalysisPartial)` / `.finished(AnalysisResult)`)
+   is a hand-written `Sendable` value type built from each snapshot instead.
+2. **`MoodTag` exists in `ReflectIntelligence` alongside `Mood` in `ReflectDomain`.** `Mood`
+   cannot carry `@Generable` — that macro requires `import FoundationModels`, which is banned
+   inside `ReflectDomain`. `MoodTag` is the `@Generable` guided-generation vocabulary
+   (`veryLow`/`low`/`neutral`/`good`/`great`, no raw values) with `var mood: Mood` and
+   `init(_ mood: Mood)` translating immediately after generation.
+3. **Phase 2's `EntryAnalysis` carries no `themes`/`actionItems`, and one `.general` request
+   replaces the `.contentTagging`/`.general` split.** Theme normalisation, `Theme` upsert and
+   the action-item inbox are Phase 3's job, so generating them now would spend context and
+   latency on output nothing persists yet. A single `EntryAnalysis` request must pick one
+   model, and the request's dominant output is prose, so `.general` is what Phase 2 uses;
+   `IntelligenceEngine.init(useCase:)` keeps the `.contentTagging` seam open for Phase 3.
+   `AnalysisVersion.current` must bump to `2` when Phase 3 adds them, which automatically makes
+   every Phase 2 insight stale via `idsNeedingAnalysis`.
+4. **`modelIdentifier` stores the plain string `"system-language-model.general"`, not a
+   recorded `SystemLanguageModel.Variant`.** `SystemLanguageModel.variant` is iOS 27-only;
+   Phase 2's minimum deployment is iOS 26. Recording the variant behind
+   `if #available(iOS 27, *)` is deferred to Phase 4 or 6 rather than adding an availability
+   branch for a debug-only field now.
+
+### Public surface (as implemented)
 
 ```swift
-protocol EntryAnalyzing   { func analyze(_ text: String) -> AsyncThrowingStream<EntryAnalysis.PartiallyGenerated, Error> }
-protocol DigestGenerating { func digest(for week: DateRange) async throws -> WeeklyDigestDraft }
-protocol ReflectionPrompting { func question(after analysis: EntryAnalysis) async throws -> String }
-enum IntelligenceAvailability  // wraps SystemLanguageModel.Availability
-enum IntelligenceError         // app-facing mapping of GenerationError
-```
-
-### Generable schemas (the showcase)
-
-```swift
-@Generable
-struct EntryAnalysis {
-  @Guide(description: "Overall mood of the writer") var mood: Mood        // Mood is @Generable too
-  @Guide(.range(0...1)) var moodConfidence: Double
-  @Guide(description: "One sentence, second person, no advice") var summary: String
-  @Guide(.maximumCount(3)) var themes: [ThemeTag]                          // short noun phrases
-  @Guide(.maximumCount(5)) var actionItems: [String]                       // only explicit intentions
-  @Guide(description: "One open question that helps the writer reflect") var reflectionQuestion: String
+enum AnalysisEvent: Sendable, Equatable { case partial(AnalysisPartial); case finished(AnalysisResult) }
+protocol EntryAnalyzing: Sendable {
+    func analyze(_ text: String) async -> AsyncThrowingStream<AnalysisEvent, any Error>
+    func prewarm() async
 }
+enum IntelligenceAvailability  // wraps SystemLanguageModel.Availability
+enum IntelligenceError         // app-facing mapping of GenerationError; isRetryable, shouldStoreNoInsight
+actor IntelligenceEngine: EntryAnalyzing        // the only place a LanguageModelSession lives
+actor EnrichmentCoordinator                     // serial queue: dedup, retry, persists via JournalStore
+final class FakeEntryAnalyzer: EntryAnalyzing, Sendable  // scripted, for previews/tests
+```
+
+`DigestGenerating`/`ReflectionPrompting` and their `@Generable` schemas are Phase 4's addition,
+not yet implemented.
+
+### Generable schema (as implemented)
+
+```swift
+@Generable enum MoodTag: Sendable { case veryLow, low, neutral, good, great }  // no raw values
 
 @Generable
-struct WeeklyDigestDraft { headline, narrative, highlights (≤3), recurringThemes (≤3), suggestedFocus }
+struct EntryAnalysis: Sendable {                                    // declaration order = generation order
+  @Guide(description: "Overall mood of the writer") var mood: MoodTag
+  @Guide(description: "...", .range(0.0...1.0)) var moodConfidence: Double
+  @Guide(description: "One sentence, second person, no advice") var summary: String
+  @Guide(description: "One open question, no advice, no judgement") var reflectionQuestion: String
+}
 ```
+
+`themes: [ThemeTag]` and `actionItems: [String]` are Phase 3 additions to this schema (see
+deviation 3 above). `WeeklyDigestDraft` is Phase 4.
 
 ### Engine
 
-- `IntelligenceEngine` is an **actor** that owns one `LanguageModelSession` per task kind
-  (`analysis`, `digest`). `LanguageModelSession` is not `Sendable` and rejects concurrent
-  requests, so the actor serialises work and is the only place sessions live.
-- Analysis uses `SystemLanguageModel(useCase: .contentTagging)` for mood/theme extraction
-  (the tagging adapter is tuned for exactly this) and the `.general` model for summary,
-  digest and reflection question.
-- Streaming: `streamResponse(generating: EntryAnalysis.self)` yields
-  `EntryAnalysis.PartiallyGenerated`; the editor renders fields as they appear.
-- `prewarm()` is called when the app enters the foreground and when the editor opens.
-- Sessions are recreated (fresh transcript) per entry; there is no multi-turn state to leak.
+- `IntelligenceEngine` is an **actor** owning a single lazily-created `LanguageModelSession`.
+  `LanguageModelSession` is not `Sendable` and rejects concurrent requests
+  (`GenerationError.concurrentRequests`); `analyze(_:)` chains every call onto one `pending`
+  task so exactly one generation runs at a time, making `concurrentRequests` structurally
+  impossible rather than merely unlikely.
+- `AnalysisBudget.budgeted(_:maxCharacters:)` (8,000 characters ≈ 2,000 tokens) truncates at
+  the last paragraph break, falling back to the last whitespace, then a hard prefix, before
+  every request — pure and synchronous, no model involvement.
+- On `GenerationError.exceededContextWindowSize`, `IntelligenceEngine` retries once with a
+  fresh session and half the character budget before giving up and marking the insight
+  `isPartial`.
+- `session` is set to `nil` in a `defer` after every attempt, so the next entry always starts a
+  fresh transcript — there is no multi-turn state worth keeping.
+- `prewarm()` creates the session if needed and calls `session.prewarm()`; `ReflectRootView`
+  calls it once at launch when `IntelligenceAvailability.current == .available`.
+
+### Coordinator
+
+`EnrichmentCoordinator` is the serial queue between saving an entry and persisting its insight:
+FIFO with dedup (same id + identical text while in flight is a no-op; same id + new text
+supersedes **and cancels the in-flight run** for that id — `enqueue` cancels `currentTask` and
+`process` distinguishes that quiet, expected cancellation from an explicit `cancel(entryID:)`
+via a `supersededIDs` marker, which `cancel` itself clears so a cancel landing right after a
+supersede still broadcasts a terminal update instead of being silently swallowed), retry with an
+injectable delay (`maxAttempts`, default 2), and a broadcast mechanism (`updates(for:) ->
+AsyncStream<EnrichmentUpdate>`) that replays the last known update to a late subscriber.
+`EnrichmentUpdate.finished` carries the persisted `InsightDraft` itself (not just a bare
+completion marker), so an observer — chiefly `InsightPanelModel`, which has no separately-
+fetched `EntryInsight` to fall back on in the editor — can render mood/summary/question the
+instant analysis completes without the streamed content vanishing.
+
+A `.refused` result stores no insight (`shouldStoreNoInsight`); other retryable errors
+(`throttled`, `modelUnavailable`, `malformedOutput`, `unknown`) retry up to `maxAttempts` before
+being reported as `.failed`. An `.unknown` error is additionally checked against an injectable
+`availability: () -> IntelligenceAvailability` closure (default `{ IntelligenceAvailability.current }`,
+overridable in tests): if availability is not `.available` when it occurs, it is demoted to a
+non-retryable `.modelUnavailable` rather than burning a second doomed generation attempt — in
+practice this override is now largely redundant with `IntelligenceError.init`'s own
+domain/code-based classification of the diagnosed missing-assets error (see the error-policy
+table below), but remains as a safety net for any other still-unclassified failure while the
+model is genuinely unavailable. A failure never removes or alters the entry's text and never
+propagates out of the coordinator.
 
 ### Tool calling
 
-`RecentEntriesTool` and `ThemeHistoryTool` conform to `Tool` and read through
-`JournalStore`. The digest session is created with these tools so the model can ask "what
-did the writer say about *work* this month?" instead of receiving a giant prompt. This is
-the second headline capability of the framework and it also keeps prompts inside the
-context window.
+Not yet implemented — Phase 3. `RecentEntriesTool` and `ThemeHistoryTool` will conform to
+`Tool` and read through `JournalStore`, grounding the digest session and the "seen before"
+callout in local data.
 
-### Error policy
+### Error policy (as implemented — `IntelligenceError`)
 
-| `GenerationError` | Handling |
-|---|---|
-| `exceededContextWindowSize` | Chunk the entry (paragraph boundaries), analyze the first ~2.5k tokens, mark insight as `partial`. Digest: reduce the entry set, rely on tools. |
-| `guardrailViolation`, `refusal` | Store no insight, show "Reflect couldn't analyze this entry" without judgement, allow retry. Never surface the raw error. |
-| `unsupportedLanguageOrLocale` | Show message once, don't retry automatically. |
-| `rateLimited`, `concurrentRequests` | Back off and requeue (the actor should make `concurrentRequests` impossible). |
-| `assetsUnavailable`, `decodingFailure`, `unsupportedGuide` | Log, requeue once, then give up for this `analysisVersion`. |
+| Source error | `IntelligenceError` | `isRetryable` | `shouldStoreNoInsight` |
+|---|---|---|---|
+| `GenerationError.exceededContextWindowSize` | `contextWindowExceeded` | no (already retried once inside the engine) | no |
+| `GenerationError.guardrailViolation`, `.refusal` | `refused` | no | **yes** — show a calm, non-judgemental message, allow manual retry |
+| `GenerationError.unsupportedLanguageOrLocale` | `unsupportedLanguage` | no | no |
+| `GenerationError.rateLimited`, `.concurrentRequests` | `throttled` | yes | no |
+| `GenerationError.assetsUnavailable` | `modelUnavailable` | yes | no |
+| `GenerationError.decodingFailure`, `.unsupportedGuide` | `malformedOutput` | yes | no |
+| `is CancellationError` | `cancelled` | no | no |
+| raw `NSError` matching the diagnosed missing-assets domain/code chain (not a documented `GenerationError` case — see below) | `modelUnavailable` | yes | no |
+| anything else undocumented | `unknown` | yes | no |
+
+**Diagnosed missing-assets classification (fix cycle 2):** on a host where
+`SystemLanguageModel.default.isAvailable` reports `true` but the on-device model's assets are
+not actually installed, real generation requests fail immediately with a raw, undocumented
+`NSError` — not a `LanguageModelSession.GenerationError` case — bridged with domain
+`FoundationModels.LanguageModelError`, whose underlying-error chain contains
+`ModelManagerServices.ModelManagerError` (observed code 1026) and/or
+`com.apple.UnifiedAssetFramework` (observed code 5000). `IntelligenceError.init` walks that
+chain and matches on domain/code only, **never** on `localizedDescription` or any other string,
+so this cannot previously fall through to `.unknown` (a doomed retry storm plus the vaguest
+possible copy) — it now reaches the calm "the on-device model isn't ready yet" state
+immediately. This is also what lets `LiveEntryAnalysisTests`' capability probe distinguish
+"genuinely can't generate here" (skip) from "the engine is broken" (run and fail loudly) — see
+§11 and `docs/PLAN.md`'s Phase 2 "Verified" paragraph.
+
+`IntelligenceError.init(_:)` never captures or re-exposes the source error's text/`Context` —
+the raw model message never reaches the UI; `InsightPanel` in `ReflectFeatures` owns the
+localized copy for every case.
 
 ### iOS 27 adoption (behind `#available(iOS 27, *)`)
 
 - `session.usage` / `contextSize` to display token budget in a debug panel and to size chunks.
 - `ContextOptions(reasoningLevel:)` for the weekly digest (quality over latency).
 - `TranscriptErrorHandlingPolicy.revertTranscript` on the digest session.
-- `SystemLanguageModel.Variant` recorded in `EntryInsight.modelIdentifier`.
+- `SystemLanguageModel.Variant` recorded in `EntryInsight.modelIdentifier` (deviation 4 above).
 - `LanguageModel` protocol enables injecting a fake model into the real engine in tests.
 - Image attachments (photo journaling) are a post-v1 phase.
 
@@ -286,7 +391,7 @@ Re-analysis triggers: `analysisVersion` bump, user tap "Re-analyze", entry text 
 | Layer | How |
 |---|---|
 | Domain | In-memory `ModelContainer`, repository and query tests. |
-| Intelligence | `FakeEntryAnalyzer` for logic; error-mapping tests; live prompt-quality tests gated with `.enabled(if: SystemLanguageModel.default.isAvailable)` and a small golden set of entries. |
+| Intelligence | `FakeEntryAnalyzer` for logic; error-mapping tests; live prompt-quality tests over a small golden set of entries, gated by a `CapabilityProbe` that skips only when generation genuinely cannot run here (`!isAvailable` or the diagnosed `.modelUnavailable` case) and otherwise runs and fails loudly. |
 | Speech | State machine tests with a fake audio source; live tests skipped in CI. |
 | Features | View-model tests with fakes; preview coverage for every screen. |
 | App | Xcode UI test target added via Xcode once the flows stabilise (Phase 6). |

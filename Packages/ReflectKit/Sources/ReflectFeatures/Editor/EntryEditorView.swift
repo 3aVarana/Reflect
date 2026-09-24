@@ -1,11 +1,13 @@
 import SwiftUI
 import SwiftData
 import ReflectDomain
+import ReflectIntelligence
 
 /// The full-screen text editor. Autosaves on a 1s debounce after typing stops, and always
 /// flushes/cleans up on dismiss.
 struct EntryEditorView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.enrichmentCoordinator) private var coordinator
     @FocusState private var isFocused: Bool
     @State private var vm: EntryEditorViewModel
 
@@ -21,6 +23,9 @@ struct EntryEditorView: View {
     /// failure can never be rendered in this view's own footer — the sheet is already gone by
     /// the time it happens — so the presenter wires this to an `.alert` of its own that
     /// outlives the sheet.
+    ///
+    /// `onSaved` is wired in `body` (not here) because it needs `coordinator`, which is an
+    /// `@Environment` value and therefore not resolved yet inside `init`.
     init(mode: EditorMode, context: ModelContext, onSaveFailure: (() -> Void)? = nil) {
         self.mode = mode
         let vm = EntryEditorViewModel(mode: mode, context: context)
@@ -31,13 +36,25 @@ struct EntryEditorView: View {
 
     var body: some View {
         NavigationStack {
-            TextEditor(text: Binding(
-                get: { vm.text },
-                set: { vm.text = $0; vm.textChanged() }
-            ))
-            .scrollContentBackground(.hidden)
-            .padding(Spacing.m)
-            .focused($isFocused)
+            VStack(spacing: 0) {
+                TextEditor(text: Binding(
+                    get: { vm.text },
+                    set: { vm.text = $0; vm.textChanged() }
+                ))
+                .scrollContentBackground(.hidden)
+                .padding(Spacing.m)
+                .focused($isFocused)
+                .frame(maxHeight: .infinity)
+                if let entryID = vm.entryID {
+                    InsightPanel(entryID: entryID, insight: vm.persistedInsight, text: vm.text)
+                        // See the matching `.id(entryID)` in `EntryDetailView`: this entryID is
+                        // fixed for the lifetime of one editor session, but applying it here
+                        // too keeps both call sites consistent and safe against future reuse.
+                        .id(entryID)
+                        .padding(.horizontal, Spacing.m)
+                        .padding(.bottom, Spacing.s)
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 footer(vm)
             }
@@ -69,6 +86,15 @@ struct EntryEditorView: View {
             }
             .onAppear {
                 isFocused = true
+                // Wired here, not in `init`: `coordinator` is an `@Environment` value and is
+                // not resolved yet inside `init`. This container is never conditionally empty
+                // (the `TextEditor` is always present), so the `.onAppear`-never-fires trap
+                // documented on `init` does not apply.
+                vm.onSaved = { entryID, text in
+                    Task {
+                        await coordinator?.enqueue(entryID: entryID, text: text)
+                    }
+                }
             }
         }
         // Fires for every dismissal path — `Done`, `Close`, and interactive swipe-down —
