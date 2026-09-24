@@ -76,6 +76,10 @@ Acceptance
 - Typing an entry and pausing shows mood, summary and question within a few seconds on a
   device with Apple Intelligence; insight is stored and shown in list and detail.
 - Guardrail refusal shows a calm, non-judgemental message and lets the user retry.
+  *Decision (2026-09-24):* which content the model refuses is Apple's guardrail policy, not
+  Reflect's. The app does no content screening of its own; a manual attempt with self-harm
+  language was analysed normally by the model, so the refusal path is verified by the fake-
+  analyzer tests only.
 - Turning Apple Intelligence off leaves the journal fully functional.
 
 **Showcase:** guided generation, streaming partials, availability + error handling, actor
