@@ -6,8 +6,8 @@ import ReflectDomain
 nonisolated extension Mood? {
     var glyphSymbolName: String {
         switch self {
-        case .veryLow: "cloud.heavyrain.fill"
-        case .low: "cloud.fill"
+        case .veryLow: "cloud.bolt.rain.fill"
+        case .low: "cloud.heavyrain.fill"
         case .neutral: "cloud.sun.fill"
         case .good: "sun.max.fill"
         case .great: "sparkles"
